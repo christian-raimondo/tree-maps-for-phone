@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>NYC Trees & Income by ZIP</title>
+
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+
+  <!-- PT Serif for titles, tooltips, filters -->
+  <link
+    href="https://fonts.googleapis.com/css2?family=PT+Serif:wght@400;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #ffffff !important;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: #ffffff !important;
+    }
+
+    /* White background for map area */
+    .maps-container,
+    .map-wrapper,
+    .map-title {
+      background: #ffffff !important;
+    }
+
+    /* MAP TITLES */
+    .map-title {
+      text-align: center;
+      font-family: "PT Serif", serif !important;
+      font-size: 24px;
+      font-weight: 700;
+      margin: 0;
+      padding: 16px 0 10px 0;
+      background: #ffffff !important;
+    }
+
+    /* FILTER BAR */
+    .controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 14px;
+      border-bottom: 1px solid #eee;
+      flex-wrap: wrap;
+      background: #ffffff !important;
+    }
+
+    /* Make ALL filter text PT Serif */
+    .controls label,
+    .controls input,
+    .controls input::placeholder,
+    .zip-suggestions,
+    .zip-suggestions .suggestion,
+    .zip-suggestions .no-match {
+      font-family: "PT Serif", serif !important;
+      font-size: 20px !important;
+      color: #000 !important;
+    }
+
+    .controls input::placeholder {
+      font-family: "PT Serif", serif !important;
+      font-size: 15px !important;
+      color: #000 !important;
+      opacity: 0.7;
+    }
+
+    .zip-search-wrapper {
+      position: relative;
+      min-width: 150px;
+    }
+
+    /* Dropdown styling */
+    .zip-suggestions {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      background: #ffffff !important;
+      border: 1px solid #ccc;
+      border-top: none;
+      max-height: 200px;
+      overflow-y: auto;
+      z-index: 9999;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+    }
+
+    .zip-suggestions .suggestion {
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+
+    .zip-suggestions .suggestion:hover {
+      background: #f0f0f0;
+    }
+
+    /* STACK MAPS VERTICALLY */
+    .maps-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column; /* changed from row to column */
+      min-height: 0;
+    }
+
+    .map-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      border-top: 1px solid #ddd; /* changed from border-left */
+    }
+
+    .map-wrapper:first-child {
+      border-top: none; /* changed from border-left: none */
+    }
+
+    .map {
+      flex: 1;
+    }
+
+    /* Tooltip font */
+    .leaflet-tooltip {
+      font-family: "PT Serif", serif !important;
+    }
+
+    /* Hide Leaflet attribution */
+    .leaflet-control-attribution {
+      display: none !important;
+    }
+  </style>
+</head>
+
+<body>
+<div id="app">
+
+  <!-- Top filter bar -->
+  <div class="controls">
+    <label for="zipSearch">Find your ZIP code:</label>
+    <div class="zip-search-wrapper">
+      <input id="zipSearch" type="text" placeholder="Type ZIP (e.g. 10016)" maxlength="5" />
+      <div id="zipSuggestions" class="zip-suggestions"></div>
+    </div>
+  </div>
+
+  <!-- MAPS (now stacked vertically) -->
+  <div class="maps-container">
+    <div class="map-wrapper">
+      <h2 class="map-title">Map of Amount of Trees per 100 Residents in Each ZIP Code</h2>
+      <div id="mapTrees" class="map"></div>
+    </div>
+
+    <div class="map-wrapper">
+      <h2 class="map-title">Map of Median Household Income in Each ZIP Code</h2>
+      <div id="mapIncome" class="map"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Leaflet JS -->
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+  crossorigin=""
+></script>
+
+<!-- d3 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+
+<script>
+/* ---------------------------
+   MAP CONSTANTS
+---------------------------- */
+const NYC_CENTER = [40.7128, -74.0060];
+const NYC_ZOOM = 9;
+
+let geojsonLayerTrees, geojsonLayerIncome;
+let fullBounds = null;
+let dataByZip = {};
+let treeColorScale, incomeColorScale;
+let selectedZip = null;
+let allZips = [];
+
+/* ---------------------------
+   INIT MAPS
+---------------------------- */
+const mapTrees = L.map("mapTrees", {
+  zoomControl: false,
+  attributionControl: false
+}).setView(NYC_CENTER, NYC_ZOOM);
+
+const mapIncome = L.map("mapIncome", {
+  zoomControl: false,
+  attributionControl: false
+}).setView(NYC_CENTER, NYC_ZOOM);
+
+L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { maxZoom: 18 }).addTo(mapTrees);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { maxZoom: 18 }).addTo(mapIncome);
+
+/* ---------------------------
+   LOAD DATA
+---------------------------- */
+Promise.all([
+  d3.json("nyc_zipcodes.geojson"),
+  d3.csv("Tree Data Per Zip.csv")
+]).then(initMaps);
+
+function initMaps([geojson, csv]) {
+
+  /* Convert CSV rows */
+  csv.forEach(d => {
+    const zip = d.postcode?.toString().padStart(5, "0");
+    if (!zip) return;
+
+    dataByZip[zip] = {
+      zip,
+      treesPer100: +d["Trees per 100 Residents"],
+      treeCount: +d["Tree Count"],
+      population: +d["Population"],
+      medianIncome: +d["Median Income"],
+      goodPct: d["Percent good"] ? +d["Percent good"] : null,
+      fairPct: d["Percent fair"] ? +d["Percent fair"] : null,
+      poorPct: d["Percent poor"] ? +d["Percent poor"] : null
+    };
+  });
+
+  allZips = Object.keys(dataByZip).sort();
+  setupZipSearch();
+
+  /* Build color scales */
+  const treeExtent = d3.extent(allZips.map(z => dataByZip[z].treesPer100));
+  const incomeExtent = d3.extent(allZips.map(z => dataByZip[z].medianIncome));
+
+  treeColorScale = d3.scaleSequential().domain(treeExtent).interpolator(d3.interpolateGreens);
+  incomeColorScale = d3.scaleSequential().domain(incomeExtent).interpolator(d3.interpolateRgb("#fde0dd", "#c51b8a"));
+
+  /* Build GeoJSON layers */
+  geojsonLayerTrees = L.geoJSON(geojson, {
+    style: styleTrees,
+    onEachFeature: (f, l) => {
+      attachTooltip(f, l, "trees");
+      addInteractions(l, "trees");
+    }
+  }).addTo(mapTrees);
+
+  geojsonLayerIncome = L.geoJSON(geojson, {
+    style: styleIncome,
+    onEachFeature: (f, l) => {
+      attachTooltip(f, l, "income");
+      addInteractions(l, "income");
+    }
+  }).addTo(mapIncome);
+
+  fullBounds = geojsonLayerTrees.getBounds();
+  resetView();
+}
+
+/* ---------------------------
+   STYLE FUNCTIONS
+---------------------------- */
+function styleTrees(f) { return styleBase(f, "trees"); }
+function styleIncome(f) { return styleBase(f, "income"); }
+
+function styleBase(feature, variant) {
+  const zip = feature.properties.postalCode?.toString().padStart(5, "0");
+  const d = dataByZip[zip];
+
+  let fillColor = "#ccc";
+  if (d) {
+    fillColor = variant === "trees"
+      ? treeColorScale(d.treesPer100)
+      : incomeColorScale(d.medianIncome);
+  }
+
+  const active = !selectedZip || selectedZip === zip;
+
+  return {
+    weight: active ? 1.5 : 0.7,
+    opacity: active ? 1 : 0.3,
+    color: active ? "#333" : "#aaa",
+    fillOpacity: active ? 0.85 : 0.15,
+    fillColor
+  };
+}
+
+/* Reapply styles whenever selection changes */
+function applyStyles() {
+  if (geojsonLayerTrees) geojsonLayerTrees.setStyle(styleTrees);
+  if (geojsonLayerIncome) geojsonLayerIncome.setStyle(styleIncome);
+}
+
+/* ---------------------------
+   TOOLTIPS
+---------------------------- */
+function attachTooltip(feature, layer, type) {
+  const zip = feature.properties.postalCode.toString().padStart(5, "0");
+  const d = dataByZip[zip];
+
+  if (!d) return;
+
+  const f0 = d3.format(",.0f");
+  const f1 = d3.format(".1f");
+
+  let html = "";
+
+  if (type === "trees") {
+    html = `
+      <h4 style="font-family:PT Serif;">ZIP Code: ${zip}</h4>
+      <p style="font-family:PT Serif;">
+        Trees per 100 Residents: <strong>${f1(d.treesPer100)}</strong><br>
+        Number of Trees: <strong>${f0(d.treeCount)}</strong><br>
+        Population: <strong>${f0(d.population)}</strong><br>
+        ${d.goodPct ? `Trees in Good Health: <strong>${f1(d.goodPct)}%</strong><br>` : ""}
+        ${d.fairPct ? `Trees in Fair Health: <strong>${f1(d.fairPct)}%</strong><br>` : ""}
+        ${d.poorPct ? `Trees in Poor Health: <strong>${f1(d.poorPct)}%</strong>` : ""}
+      </p>`;
+  } else {
+    html = `
+      <h4 style="font-family:PT Serif;">ZIP Code: ${zip}</h4>
+      <p style="font-family:PT Serif;">
+        Median Household Income: <strong>$${f0(d.medianIncome)}</strong>
+      </p>`;
+  }
+
+  layer.bindTooltip(html, { sticky: true });
+}
+
+/* ---------------------------
+   INTERACTIONS
+---------------------------- */
+function addInteractions(layer, type) {
+  layer.on({
+    click: e => {
+      const zip = e.target.feature.properties.postalCode.toString().padStart(5, "0");
+      const input = document.getElementById("zipSearch");
+      const box = document.getElementById("zipSuggestions");
+
+      if (selectedZip === zip) {
+        selectedZip = null;
+        input.value = "";
+        box.innerHTML = "";
+        resetView();
+      } else {
+        selectedZip = zip;
+        input.value = zip;
+        box.innerHTML = "";
+        zoomToZip(zip);
+      }
+    },
+
+    mouseover: e => {
+      const l = e.target;
+      l.setStyle({ weight: 2, color: "#000", fillOpacity: 0.95 });
+      if (!L.Browser.ie && !L.Browser.opera) l.bringToFront();
+    },
+
+    mouseout: e => {
+      applyStyles();
+    }
+  });
+}
+
+/* ---------------------------
+   VIEW / ZOOM
+---------------------------- */
+function resetView() {
+  if (fullBounds) {
+    mapTrees.fitBounds(fullBounds);
+    mapIncome.fitBounds(fullBounds);
+  }
+  applyStyles();
+}
+
+function zoomToZip(zip) {
+  let target = null;
+  geojsonLayerTrees.eachLayer(l => {
+    const z = l.feature.properties.postalCode.toString().padStart(5, "0");
+    if (z === zip) target = l;
+  });
+
+  if (!target) return;
+
+  const b = target.getBounds();
+  const opt = { maxZoom: 13, padding: [10, 10] };
+
+  mapTrees.fitBounds(b, opt);
+  mapIncome.fitBounds(b, opt);
+  applyStyles();
+}
+
+/* ---------------------------
+   ZIP SEARCH
+---------------------------- */
+function setupZipSearch() {
+  const input = document.getElementById("zipSearch");
+  const box = document.getElementById("zipSuggestions");
+
+  input.addEventListener("input", () => {
+    const q = input.value;
+    if (!q) {
+      box.innerHTML = "";
+      selectedZip = null;
+      resetView();
+      return;
+    }
+
+    const matches = allZips.filter(z => z.includes(q));
+
+    if (!matches.length) {
+      box.innerHTML = '<div class="no-match">No matches</div>';
+      return;
+    }
+
+    box.innerHTML = matches.map(z =>
+      `<div class="suggestion" data-zip="${z}">${z}</div>`
+    ).join("");
+  });
+
+  box.addEventListener("click", e => {
+    const div = e.target.closest(".suggestion");
+    if (!div) return;
+
+    const zip = div.dataset.zip;
+    input.value = zip;
+    box.innerHTML = "";
+    selectedZip = zip;
+    zoomToZip(zip);
+  });
+
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      const val = input.value.trim();
+      if (allZips.includes(val)) {
+        box.innerHTML = "";
+        selectedZip = val;
+        zoomToZip(val);
+      }
+    }
+  });
+}
+</script>
+
+</body>
+</html>
